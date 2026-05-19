@@ -48,7 +48,7 @@ func (u *User) Online() {
 	u.server.MapLock.Unlock()
 
 	// 广播用户上线消息
-	u.server.BroadCast(u, " 上线！")
+	u.server.BroadCast(u, " online !")
 }
 
 // 用户下线业务
@@ -60,12 +60,28 @@ func (u *User) Offline() {
 	u.server.MapLock.Unlock()
 
 	// 广播用户下线消息
-	u.server.BroadCast(u, " 下线！")
+	u.server.BroadCast(u, " offline !")
+}
+
+// 给当前用户的客户端发消息
+func (u *User) SendMsg(msg string) {
+	u.Conn.Write([]byte(msg))
 }
 
 // 用户处理消息业务
 func (u *User) DoMessage(msg string) {
-	// 有消息就广播
-	u.server.BroadCast(u, msg)
+
+	if msg == "who" {
+		// 查询所有在线用户
+		u.server.MapLock.Lock()
+		for _, user := range u.server.OnlineMap {
+			olineMessage := "[" + user.Addr + "]" + user.Name + ":" + "is online...\n"
+			u.SendMsg(olineMessage)
+		}
+		u.server.MapLock.Unlock()
+	} else {
+		// 有消息就广播
+		u.server.BroadCast(u, msg)
+	}
 
 }

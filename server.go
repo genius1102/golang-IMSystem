@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -79,7 +80,7 @@ func (s *Server) Handler(conn net.Conn) {
 				fmt.Println("Conn Read err:", err)
 				return
 			}
-			msg := string(buf[:n-1])
+			msg := strings.TrimSpace(string(buf[:n]))
 			user.DoMessage(msg)
 		}
 	}()
