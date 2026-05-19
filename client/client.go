@@ -48,20 +48,88 @@ func (client *Client) Menu() bool {
 	fmt.Println("3、更新用户名")
 	fmt.Println("0、退出")
 
-	fmt.Println("Please choose mod(1/2/3/0)")
+	// fmt.Println(">>>>>>Please choose mod(1/2/3/0)")
 	fmt.Scanln(&client.flag)
 
 	if client.flag >= 0 && client.flag <= 3 {
 		return true
 	} else {
-		fmt.Println("Invalid choice, please try again.")
+		fmt.Println(">>>>>>Invalid choice, please try again.")
 		return false
+	}
+}
+
+// 群聊模式
+func (client *Client) GroupChat() {
+	var chatMsg string
+
+	fmt.Println(">>>>>>please input chat message(exit out)")
+	fmt.Scanln(&chatMsg)
+
+	for chatMsg != "exit" {
+		if len(chatMsg) != 0 {
+			sendMsg := chatMsg + "\n"
+			_, err := client.Conn.Write([]byte(sendMsg))
+			if err != nil {
+				fmt.Println("conn.Write err:", err)
+				break
+			}
+		}
+
+		chatMsg = ""
+		fmt.Println(">>>>>>please input chat message(exit out)")
+		fmt.Scanln(&chatMsg)
+	}
+}
+
+// 在线用户列表
+func (client *Client) OnlineUserList() {
+	sendMsg := "who\n"
+	_, err := client.Conn.Write([]byte(sendMsg))
+	if err != nil {
+		fmt.Println("conn.Write err:", err)
+		return
+	}
+
+}
+
+// 私聊模式
+func (client *Client) PrivateChat() {
+	var remoteName string
+	var chatMsg string
+
+	client.OnlineUserList()
+	fmt.Println(">>>>>>请输入聊天对象用户名（输入exit退出）: ")
+	fmt.Scanln(&remoteName)
+
+	for remoteName != "exit" {
+		fmt.Println(">>>>>>请输入消息内容（输入exit退出）：")
+		fmt.Scanln(&chatMsg)
+		for chatMsg != "exit" {
+			if len(chatMsg) != 0 {
+				sendMsg := "to|" + remoteName + "|" + chatMsg
+				_, err := client.Conn.Write([]byte(sendMsg))
+				if err != nil {
+					fmt.Println("conn.Write err:", err)
+					break
+				}
+			}
+
+			chatMsg = ""
+			fmt.Println(">>>>>>请输入消息内容（输入exit退出）：")
+			fmt.Scanln(&chatMsg)
+		}
+
+		client.OnlineUserList()
+		fmt.Println(">>>>>>请输入聊天对象用户名（输入exit退出）: ")
+		fmt.Scanln(&remoteName)
+
 	}
 }
 
 // 更新用户名
 func (client *Client) UpdateName() bool {
-	fmt.Println("Please input rename: ")
+	fmt.Println(">>>>>>Please input rename: ")
 	fmt.Scanln(&client.Name)
 	sendMsg := "rename|" + client.Name + "\n"
 	_, err := client.Conn.Write([]byte(sendMsg))
@@ -84,20 +152,16 @@ func (client *Client) Run() {
 		switch client.flag {
 		case 1:
 			// 群聊模式
-			fmt.Println("群聊模式")
-			break
+			client.GroupChat()
 		case 2:
 			// 私聊模式
-			fmt.Println("私聊模式")
-			break
+			client.PrivateChat()
 		case 3:
 			// 更新用户名
 			client.UpdateName()
-			break
 		case 0:
 			// 退出
 			fmt.Println("退出")
-			break
 		}
 
 	}
