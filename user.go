@@ -100,6 +100,38 @@ func (u *User) DoMessage(msg string) {
 			u.SendMsg("rename success: " + newName + "\n")
 		}
 
+	} else if len(msg) > 4 && msg[:3] == "to|" {
+		// to|张三|你好
+
+		parts := strings.Split(msg, "|")
+
+		if len(parts) != 3 {
+			u.SendMsg("format error: use to|name|message\n")
+			return
+		}
+
+		remoteName := parts[1]
+		content := parts[2]
+
+		if remoteName == "" {
+			u.SendMsg("remote name is empty\n")
+			return
+		}
+
+		if content == "" {
+			u.SendMsg("message is empty\n")
+			return
+		}
+
+		remoteUser, ok := u.server.OnlineMap[remoteName]
+
+		if !ok {
+			u.SendMsg("user not online\n")
+			return
+		}
+
+		remoteUser.SendMsg(u.Name + " send to you: " + content + "\n")
+
 	} else {
 		// 有消息就广播
 		u.server.BroadCast(u, ":"+msg)

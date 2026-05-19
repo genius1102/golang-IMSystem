@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Server struct {
@@ -59,10 +60,13 @@ func (s *Server) Handler(conn net.Conn) {
 	// fmt.Println("连接建立成功")
 
 	// 创建用户
-	user := NewUser(conn,s)
+	user := NewUser(conn, s)
 
 	// 用户上线
 	user.Online()
+
+	// 监听用户是否活跃的管道
+	isAlive := make(chan bool)
 
 	// 接收客户端发送消息
 	go func() {
@@ -82,11 +86,28 @@ func (s *Server) Handler(conn net.Conn) {
 			}
 			msg := strings.TrimSpace(string(buf[:n]))
 			user.DoMessage(msg)
+
+			isAlive <- true
 		}
 	}()
 
 	// handler 阻塞
-	select {}
+	for {
+		select {
+		case <-isAlive:
+			// 用户活跃，重置超时时间
+			// 不做任何操作，为了激活select，更新下面的定时器
+
+		case <- time.After(time.Second*100):
+			// 100秒没有活动，用户强制关闭
+			user.SendMsg("you are out")
+			close(user.C)
+			conn.Close() 
+
+			// 退出当前handler
+			return
+		}
+	}
 
 }
 
