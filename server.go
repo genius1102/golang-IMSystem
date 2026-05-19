@@ -58,18 +58,10 @@ func (s *Server) Handler(conn net.Conn) {
 	// fmt.Println("连接建立成功")
 
 	// 创建用户
-	user := NewUser(conn)
+	user := NewUser(conn,s)
 
-	// 用户上线将其放到onlinemap中
-	// 加锁
-	s.MapLock.Lock()
-
-	s.OnlineMap[user.Name] = user
-
-	s.MapLock.Unlock()
-
-	// 广播用户上线消息
-	s.BroadCast(user, " is online !")
+	// 用户上线
+	user.Online()
 
 	// 接收客户端发送消息
 	go func() {
@@ -77,16 +69,10 @@ func (s *Server) Handler(conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if n == 0 {
-				s.MapLock.Lock()
-				delete(s.OnlineMap, user.Name)
-				s.MapLock.Unlock()
-
-				s.BroadCast(user, " offline !")
-
-				close(user.C)
-
+				// 用户下线
+				user.Offline()
+				// 关闭连接
 				conn.Close()
-
 				return
 			}
 			if err != nil && err != io.EOF {
@@ -94,7 +80,7 @@ func (s *Server) Handler(conn net.Conn) {
 				return
 			}
 			msg := string(buf[:n-1])
-			s.BroadCast(user, ":"+msg)
+			user.DoMessage(msg)
 		}
 	}()
 
