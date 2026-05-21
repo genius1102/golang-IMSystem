@@ -35,7 +35,10 @@ func NewUser(conn net.Conn, server *Server) *User {
 // 监听当前user的channel，一旦有消息直接发送给客户端
 func (u *User) ListenMessage() {
 	for {
-		msg := <-u.C
+		msg, ok := <-u.C
+		if !ok {
+			return // channel关闭，goroutine安全退出
+		}
 		u.Conn.Write([]byte(msg + "\n"))
 	}
 }
