@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"fmt"
 	"imsystem/internal/protocol"
 	"io"
@@ -22,15 +23,19 @@ type Server struct {
 
 	// 优雅关闭
 	Quit chan struct{}
+
+	// Phase 3: SQLite 数据库
+	DB *sql.DB
 }
 
-func NewServer(ip string, port int) *Server {
+func NewServer(ip string, port int, db *sql.DB) *Server {
 	return &Server{
 		Ip:        ip,
 		Port:      port,
 		OnlineMap: make(map[string]*User),
 		Message:   make(chan *protocol.Message),
 		Quit:      make(chan struct{}),
+		DB:        db,
 	}
 }
 
@@ -56,9 +61,47 @@ func (s *Server) BroadCast(msg *protocol.Message) {
 	s.Message <- msg
 }
 
+// Phase 3: 推送离线消息给刚上线的用户
+func (s *Server) pushOfflineMessages(user *User) {
+	if s.DB == nil {
+		return
+	}
+
+	msgs, err := GetUndeliveredMessages(s.DB, user.Name)
+	if err != nil {
+		fmt.Printf("get undelivered messages for %s err: %v\n", user.Name, err)
+		return
+	}
+
+	if len(msgs) == 0 {
+		return
+	}
+
+	// 先发一条系统通知
+	user.SendMsg(&protocol.Message{
+		Type:    protocol.MessageType_SYSTEM,
+		Content: fmt.Sprintf(">>>>>> 您有 %d 条离线消息:", len(msgs)),
+	})
+
+	// 逐条推送
+	for _, msg := range msgs {
+		user.SendMsg(msg)
+	}
+
+	// 标记为已投递
+	if err := MarkMessagesDelivered(s.DB, user.Name); err != nil {
+		fmt.Printf("mark delivered for %s err: %v\n", user.Name, err)
+	}
+
+	fmt.Printf("pushed %d offline messages to %s\n", len(msgs), user.Name)
+}
+
 func (s *Server) Handler(conn net.Conn) {
 	user := NewUser(conn, s)
 	user.Online()
+
+	// Phase 3: 推送离线消息
+	s.pushOfflineMessages(user)
 
 	isAlive := make(chan bool)
 
@@ -73,6 +116,22 @@ func (s *Server) Handler(conn net.Conn) {
 				user.Offline()
 				conn.Close()
 				return
+			}
+
+			// Phase 3: 心跳 PING → 直接回复 PONG
+			if msg.Type == protocol.MessageType_PING {
+				user.SendMsg(&protocol.Message{
+					Type:      protocol.MessageType_PONG,
+					Timestamp: time.Now().Unix(),
+				})
+				isAlive <- true
+				continue
+			}
+
+			// Phase 3: PONG 消息只需刷新活跃状态
+			if msg.Type == protocol.MessageType_PONG {
+				isAlive <- true
+				continue
 			}
 
 			user.DoMessage(msg)
@@ -161,6 +220,11 @@ func (s *Server) Stop() {
 	}
 	s.OnlineMap = make(map[string]*User)
 	s.MapLock.Unlock()
+
+	// Phase 3: 关闭数据库
+	if s.DB != nil {
+		s.DB.Close()
+	}
 
 	fmt.Println("Server stopped.")
 }

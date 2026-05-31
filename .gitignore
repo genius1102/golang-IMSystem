@@ -1,2 +1,4 @@
 
 *.exe
+*.db
+/test_integration.exe

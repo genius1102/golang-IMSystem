@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -111,8 +112,9 @@ func (u *User) DoMessage(msg *protocol.Message) {
 			return
 		}
 
+		oldName := u.Name
 		u.server.MapLock.Lock()
-		delete(u.server.OnlineMap, u.Name)
+		delete(u.server.OnlineMap, oldName)
 		u.server.OnlineMap[newName] = u
 		u.server.MapLock.Unlock()
 
@@ -122,13 +124,25 @@ func (u *User) DoMessage(msg *protocol.Message) {
 			Content: "rename success: " + newName,
 		})
 
+		// Phase 3: 改名后也推送针对新名字的离线消息
+		u.server.pushOfflineMessages(u)
+
 	// 3. 私聊
 	case protocol.MessageType_PRIVATE:
 		remoteUser, exists := u.server.OnlineMap[msg.To]
 		if !exists {
+			// Phase 3: 目标用户不在线，持久化离线消息
+			if u.server.DB != nil {
+				if err := SaveMessage(u.server.DB, msg); err != nil {
+					fmt.Printf("save offline message err: %v\n", err)
+				} else {
+					fmt.Printf("saved offline message from %s to %s\n", u.Name, msg.To)
+				}
+			}
+
 			u.SendMsg(&protocol.Message{
 				Type:    protocol.MessageType_SYSTEM,
-				Content: "user not online",
+				Content: fmt.Sprintf("user '%s' not online, message saved for offline delivery", msg.To),
 			})
 			return
 		}

@@ -10,6 +10,8 @@ enum MessageType {
   PRIVATE = 2;  // 私聊消息
   WHO     = 3;  // 查询在线用户
   RENAME  = 4;  // 修改用户名
+  PING    = 5;  // 心跳 ping
+  PONG    = 6;  // 心跳 pong
 }
 
 // 聊天消息
