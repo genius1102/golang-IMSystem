@@ -2,6 +2,8 @@ package server
 
 import (
 	"net"
+	"strings"
+	"time"
 
 	"imsystem/internal/protocol"
 )
@@ -9,83 +11,103 @@ import (
 type User struct {
 	Name string
 	Addr string
-	C    chan string
+	C    chan *protocol.Message // 升级为 proto.Message channel
 	Conn net.Conn
 
 	server *Server
 }
 
-// 创建一个用户的API
 func NewUser(conn net.Conn, server *Server) *User {
-	userAddr := conn.RemoteAddr().String()
 	user := &User{
-		Name:   userAddr,
-		Addr:   userAddr,
-		C:      make(chan string),
+		Name:   conn.RemoteAddr().String(),
+		Addr:   conn.RemoteAddr().String(),
+		C:      make(chan *protocol.Message),
 		Conn:   conn,
 		server: server,
 	}
 
-	// 启动监听当前user的channel的goroutine
 	go user.ListenMessage()
-
 	return user
 }
 
-// 监听当前user的channel，一旦有消息直接发送给客户端
+// 监听当前user的channel，用 EncodeMessage 写出（长度前缀帧）
 func (u *User) ListenMessage() {
 	for {
 		msg, ok := <-u.C
 		if !ok {
-			return // channel关闭，goroutine安全退出
+			return
 		}
-		u.Conn.Write([]byte(msg + "\n"))
+		protocol.EncodeMessage(u.Conn, msg)
 	}
 }
 
-// 用户上线业务
+// 用户上线
 func (u *User) Online() {
 	u.server.MapLock.Lock()
 	u.server.OnlineMap[u.Name] = u
 	u.server.MapLock.Unlock()
 
-	// 广播用户上线消息
-	u.server.BroadCast(u, " online !")
+	u.server.BroadCast(&protocol.Message{
+		Type:      protocol.MessageType_SYSTEM,
+		From:      u.Name,
+		Content:   u.Name + " 上线!",
+		Timestamp: time.Now().Unix(),
+	})
 }
 
-// 用户下线业务
+// 用户下线
 func (u *User) Offline() {
 	u.server.MapLock.Lock()
 	delete(u.server.OnlineMap, u.Name)
 	u.server.MapLock.Unlock()
 
-	// 广播用户下线消息
-	u.server.BroadCast(u, " offline !")
+	u.server.BroadCast(&protocol.Message{
+		Type:      protocol.MessageType_SYSTEM,
+		From:      u.Name,
+		Content:   u.Name + " 下线!",
+		Timestamp: time.Now().Unix(),
+	})
 }
 
-// 给当前用户的客户端发消息
-func (u *User) SendMsg(msg string) {
-	u.Conn.Write([]byte(msg))
+// 给当前用户发送 proto 消息
+func (u *User) SendMsg(msg *protocol.Message) {
+	protocol.EncodeMessage(u.Conn, msg)
 }
 
-// 用户处理消息业务
-func (u *User) DoMessage(msg string) {
+// 处理消息：用 type 字段分发，替代原来的字符串前缀匹配
+func (u *User) DoMessage(msg *protocol.Message) {
 
-	// 1. 查询在线用户
-	if protocol.IsWhoCmd(msg) {
-		u.server.MapLock.Lock()
-		for _, user := range u.server.OnlineMap {
-			onlineMsg := "[" + user.Addr + "]" + user.Name + ":is online...\n"
-			u.SendMsg(onlineMsg)
-		}
-		u.server.MapLock.Unlock()
-		return
+	// 服务端自动填充发送者和时间戳
+	msg.From = u.Name
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().Unix()
 	}
 
-	// 2. 修改用户名: rename|newName
-	if newName, ok := protocol.ParseRenameMsg(msg); ok {
+	switch msg.Type {
+
+	// 1. 查询在线用户
+	case protocol.MessageType_WHO:
+		u.server.MapLock.Lock()
+		var users []string
+		for _, user := range u.server.OnlineMap {
+			users = append(users, "["+user.Addr+"]"+user.Name+":is online...")
+		}
+		u.server.MapLock.Unlock()
+
+		u.SendMsg(&protocol.Message{
+			Type:    protocol.MessageType_SYSTEM,
+			Content: strings.Join(users, "\n"),
+		})
+
+	// 2. 修改用户名
+	case protocol.MessageType_RENAME:
+		newName := msg.Content
+
 		if _, exists := u.server.OnlineMap[newName]; exists {
-			u.SendMsg("rename error: name already exists\n")
+			u.SendMsg(&protocol.Message{
+				Type:    protocol.MessageType_SYSTEM,
+				Content: "rename error: name already exists",
+			})
 			return
 		}
 
@@ -95,21 +117,30 @@ func (u *User) DoMessage(msg string) {
 		u.server.MapLock.Unlock()
 
 		u.Name = newName
-		u.SendMsg("rename success: " + newName + "\n")
-		return
-	}
+		u.SendMsg(&protocol.Message{
+			Type:    protocol.MessageType_SYSTEM,
+			Content: "rename success: " + newName,
+		})
 
-	// 3. 私聊: to|targetName|content
-	if target, content, ok := protocol.ParsePrivateMsg(msg); ok {
-		remoteUser, exists := u.server.OnlineMap[target]
+	// 3. 私聊
+	case protocol.MessageType_PRIVATE:
+		remoteUser, exists := u.server.OnlineMap[msg.To]
 		if !exists {
-			u.SendMsg("user not online\n")
+			u.SendMsg(&protocol.Message{
+				Type:    protocol.MessageType_SYSTEM,
+				Content: "user not online",
+			})
 			return
 		}
-		remoteUser.SendMsg(u.Name + " send to you: " + content + "\n")
-		return
-	}
+		remoteUser.SendMsg(&protocol.Message{
+			Type:      protocol.MessageType_PRIVATE,
+			From:      u.Name,
+			Content:   msg.Content,
+			Timestamp: msg.Timestamp,
+		})
 
-	// 4. 默认：群聊广播
-	u.server.BroadCast(u, ":"+msg)
+	// 4. 群聊（默认）
+	default:
+		u.server.BroadCast(msg)
+	}
 }

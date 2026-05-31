@@ -1,78 +1,68 @@
 package protocol
 
-import "strings"
+import (
+	"encoding/binary"
+	"fmt"
+	"io"
 
-// 命令常量
-const (
-	CmdWho    = "who"
-	CmdRename = "rename|"
-	CmdTo     = "to|"
+	"google.golang.org/protobuf/proto"
 )
 
-// 消息类型
-const (
-	TypeSystem  = "system"
-	TypeChat    = "chat"
-	TypePrivate = "private"
-)
-
-// 构建系统广播消息（上线/下线/群聊）
-// 格式: [addr]name:content
-func BuildSystemMsg(addr, name, action string) string {
-	return "[" + addr + "]" + name + action
-}
-
-// 构建私聊消息
-// 格式: to|targetName|content
-func BuildPrivateMsg(target, content string) string {
-	return "to|" + target + "|" + content
-}
-
-// 构建改名消息
-// 格式: rename|newName
-func BuildRenameMsg(newName string) string {
-	return "rename|" + newName
-}
-
-// 解析私聊消息: "to|targetName|content"
-// 返回: target, content, ok
-func ParsePrivateMsg(msg string) (target, content string, ok bool) {
-	if len(msg) < 4 || msg[:3] != CmdTo {
-		return "", "", false
+// EncodeMessage 将 Message 序列化，加上 4 字节长度前缀，写入 writer
+//
+//	帧格式: [4字节大端长度][Protobuf序列化数据]
+//	这样接收方先读 4 字节知道消息多长，再读完整消息体
+//	消息内容可以包含任意字符（\n、|、中文、甚至二进制），不会被误解析
+func EncodeMessage(w io.Writer, msg *Message) error {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("proto marshal: %w", err)
 	}
 
-	// 去掉 "to|" 前缀
-	payload := msg[3:]
-
-	// 找第一个 | 分隔 target 和 content
-	idx := strings.Index(payload, "|")
-	if idx == -1 {
-		return "", "", false
+	// 写 4 字节长度前缀（大端序）
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
+	if _, err := w.Write(lenBuf); err != nil {
+		return fmt.Errorf("write length: %w", err)
 	}
 
-	target = payload[:idx]
-	content = payload[idx+1:]
-
-	if target == "" || content == "" {
-		return "", "", false
+	// 写消息体
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("write body: %w", err)
 	}
 
-	return target, content, true
+	return nil
 }
 
-// 解析改名消息: "rename|newName"
-func ParseRenameMsg(msg string) (newName string, ok bool) {
-	if len(msg) < 8 || msg[:7] != CmdRename {
-		return "", false
+// DecodeMessage 从 reader 读取一条长度前缀帧，反序列化为 Message
+//
+//	1. 读 4 字节 → 得到消息长度 N
+//	2. 读 N 字节 → 得到 Protobuf 数据
+//	3. 反序列化
+func DecodeMessage(r io.Reader) (*Message, error) {
+	// 读长度前缀
+	lenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(r, lenBuf); err != nil {
+		return nil, fmt.Errorf("read length: %w", err)
 	}
-	newName = msg[7:]
-	if newName == "" {
-		return "", false
-	}
-	return newName, true
-}
+	length := binary.BigEndian.Uint32(lenBuf)
 
-// 判断是否为查询在线用户命令
-func IsWhoCmd(msg string) bool {
-	return msg == CmdWho
+	// 防止恶意超大消息（1MB 上限）
+	if length > 1024*1024 {
+		return nil, fmt.Errorf("message too large: %d bytes", length)
+	}
+
+	// 读消息体
+	data := make([]byte, length)
+	if _, err := io.ReadFull(r, data); err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	// 反序列化
+	msg := &Message{}
+	if err := proto.Unmarshal(data, msg); err != nil {
+		return nil, fmt.Errorf("proto unmarshal: %w", err)
+	}
+
+	return msg, nil
 }

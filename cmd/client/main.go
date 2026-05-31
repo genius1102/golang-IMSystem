@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"imsystem/internal/protocol"
-	"io"
 	"net"
 	"os"
 	"strings"
@@ -17,7 +16,7 @@ type Client struct {
 	Name       string
 	Conn       net.Conn
 	flag       int
-	reader     *bufio.Reader // 复用输入读取器
+	reader     *bufio.Reader
 }
 
 func NewClient(serverIp string, serverPort int) *Client {
@@ -38,7 +37,7 @@ func NewClient(serverIp string, serverPort int) *Client {
 	return client
 }
 
-// 读取一行用户输入（支持空格，去掉末尾换行）
+// 读取一行用户输入
 func (c *Client) readLine(prompt string) string {
 	fmt.Print(prompt)
 	input, err := c.reader.ReadString('\n')
@@ -48,14 +47,38 @@ func (c *Client) readLine(prompt string) string {
 	return strings.TrimSpace(input)
 }
 
-// 客户端接收服务器消息，并检测断线
+// 接收服务器消息：解码 proto 消息 → 格式化显示
 func (client *Client) ReceiveMessage() {
-	_, err := io.Copy(os.Stdout, client.Conn)
-	if err != nil {
-		fmt.Println("\n>>>>>>与服务器的连接已断开:", err)
+	for {
+		msg, err := protocol.DecodeMessage(client.Conn)
+		if err != nil {
+			fmt.Println("\n>>>>>>与服务器的连接已断开:", err)
+			fmt.Println(">>>>>>按 Enter 退出...")
+			os.Exit(0)
+		}
+
+		// 根据消息类型格式化输出
+		switch msg.Type {
+		case protocol.MessageType_SYSTEM:
+			fmt.Println(msg.Content)
+
+		case protocol.MessageType_CHAT:
+			fmt.Printf("[%s]:%s\n", msg.From, msg.Content)
+
+		case protocol.MessageType_PRIVATE:
+			fmt.Printf("%s send to you: %s\n", msg.From, msg.Content)
+
+		default:
+			fmt.Println(msg.Content)
+		}
 	}
-	fmt.Println("\n>>>>>>按 Enter 退出...")
-	os.Exit(0)
+}
+
+// 发送 proto 消息
+func (client *Client) sendMessage(msg *protocol.Message) {
+	if err := protocol.EncodeMessage(client.Conn, msg); err != nil {
+		fmt.Println("send message err:", err)
+	}
 }
 
 // 显示菜单
@@ -96,20 +119,18 @@ func (client *Client) GroupChat() {
 			return
 		}
 
-		_, err := client.Conn.Write([]byte(chatMsg + "\n"))
-		if err != nil {
-			fmt.Println("conn.Write err:", err)
-			return
-		}
+		client.sendMessage(&protocol.Message{
+			Type:    protocol.MessageType_CHAT,
+			Content: chatMsg,
+		})
 	}
 }
 
 // 在线用户列表
 func (client *Client) OnlineUserList() {
-	_, err := client.Conn.Write([]byte(protocol.CmdWho + "\n"))
-	if err != nil {
-		fmt.Println("conn.Write err:", err)
-	}
+	client.sendMessage(&protocol.Message{
+		Type: protocol.MessageType_WHO,
+	})
 }
 
 // 私聊模式
@@ -127,12 +148,11 @@ func (client *Client) PrivateChat() {
 			break
 		}
 
-		msg := protocol.BuildPrivateMsg(remoteName, chatMsg)
-		_, err := client.Conn.Write([]byte(msg + "\n"))
-		if err != nil {
-			fmt.Println("conn.Write err:", err)
-			return
-		}
+		client.sendMessage(&protocol.Message{
+			Type:    protocol.MessageType_PRIVATE,
+			To:      remoteName,
+			Content: chatMsg,
+		})
 	}
 }
 
@@ -144,12 +164,10 @@ func (client *Client) UpdateName() bool {
 	}
 
 	client.Name = newName
-	msg := protocol.BuildRenameMsg(newName)
-	_, err := client.Conn.Write([]byte(msg + "\n"))
-	if err != nil {
-		fmt.Println("conn.Write err:", err)
-		return false
-	}
+	client.sendMessage(&protocol.Message{
+		Type:    protocol.MessageType_RENAME,
+		Content: newName,
+	})
 	return true
 }
 
@@ -188,11 +206,9 @@ func main() {
 		return
 	}
 
-	// 启动接收服务器消息的goroutine
 	go client.ReceiveMessage()
 
 	fmt.Println(">>>>>>>>success connect to server......")
 
-	// 启动客户端业务
 	client.Run()
 }

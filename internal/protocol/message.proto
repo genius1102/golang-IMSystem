@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package protocol;
+option go_package = "imsystem/internal/protocol";
+
+// 消息类型枚举
+enum MessageType {
+  SYSTEM  = 0;  // 系统广播（上线/下线）
+  CHAT    = 1;  // 群聊消息
+  PRIVATE = 2;  // 私聊消息
+  WHO     = 3;  // 查询在线用户
+  RENAME  = 4;  // 修改用户名
+}
+
+// 聊天消息
+message Message {
+  MessageType type      = 1;  // 消息类型
+  string      from      = 2;  // 发送者（服务端填充）
+  string      to        = 3;  // 接收者（私聊用）
+  string      content   = 4;  // 消息内容（可包含任意字符）
+  int64       timestamp = 5;  // 时间戳（服务端填充）
+}
