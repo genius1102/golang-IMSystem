@@ -89,3 +89,21 @@ func MarkMessagesDelivered(db *sql.DB, username string) error {
 	)
 	return err
 }
+
+// Phase 4: AckMessage 通过 ACK 确认单条消息已投递
+// toUser 是接收者，fromUser 是原始发送者，ts 是原始消息时间戳
+func AckMessage(db *sql.DB, toUser, fromUser, ts string) error {
+	result, err := db.Exec(
+		`UPDATE messages SET delivered = 1
+		 WHERE to_user = ? AND from_user = ? AND CAST(timestamp AS TEXT) = ? AND delivered = 0`,
+		toUser, fromUser, ts,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n > 0 {
+		fmt.Printf("message ack'd: to=%s from=%s ts=%s\n", toUser, fromUser, ts)
+	}
+	return nil
+}

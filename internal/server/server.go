@@ -26,6 +26,9 @@ type Server struct {
 
 	// Phase 3: SQLite 数据库
 	DB *sql.DB
+
+	// Phase 4: 聊天室管理
+	Rooms map[string]*Room
 }
 
 func NewServer(ip string, port int, db *sql.DB) *Server {
@@ -36,6 +39,7 @@ func NewServer(ip string, port int, db *sql.DB) *Server {
 		Message:   make(chan *protocol.Message),
 		Quit:      make(chan struct{}),
 		DB:        db,
+		Rooms:     make(map[string]*Room),
 	}
 }
 

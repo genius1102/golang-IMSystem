@@ -23,11 +23,11 @@ type Client struct {
 	reader     *bufio.Reader
 
 	// Phase 3: 连接管理
-	connected  atomic.Bool // 连接状态标志
-	lastPong   time.Time   // 最后一次收到 PONG 的时间
-	pongMu     sync.Mutex
-	disconnect chan struct{} // 断线信号
-	reconnected chan struct{} // 重连完成信号
+	connected   atomic.Bool
+	lastPong    time.Time
+	pongMu      sync.Mutex
+	disconnect  chan struct{}
+	reconnected chan struct{}
 }
 
 func NewClient(serverIp string, serverPort int) *Client {
@@ -55,7 +55,6 @@ func NewClient(serverIp string, serverPort int) *Client {
 	return client
 }
 
-// 读取一行用户输入，同时检测连接状态
 func (c *Client) readLine(prompt string) string {
 	fmt.Print(prompt)
 	input, err := c.reader.ReadString('\n')
@@ -65,12 +64,24 @@ func (c *Client) readLine(prompt string) string {
 	return strings.TrimSpace(input)
 }
 
-// 检测是否已连接
 func (c *Client) IsConnected() bool {
 	return c.connected.Load()
 }
 
-// Phase 3: 心跳 goroutine —— 每 30 秒发送 PING，检测 PONG 超时
+// Phase 4: 发送 ACK 确认
+func (c *Client) sendAck(msg *protocol.Message) {
+	// 只对私聊和聊天室消息发 ACK（系统消息不需要）
+	if msg.Type != protocol.MessageType_PRIVATE && msg.Type != protocol.MessageType_ROOM_CHAT {
+		return
+	}
+	c.sendMessage(&protocol.Message{
+		Type:    protocol.MessageType_ACK,
+		To:      msg.From,
+		Content: fmt.Sprintf("%d", msg.Timestamp),
+	})
+}
+
+// Heartbeat
 func (c *Client) Heartbeat() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -81,8 +92,6 @@ func (c *Client) Heartbeat() {
 			if !c.IsConnected() {
 				return
 			}
-
-			// 发送 PING
 			if err := protocol.EncodeMessage(c.Conn, &protocol.Message{
 				Type: protocol.MessageType_PING,
 			}); err != nil {
@@ -90,8 +99,6 @@ func (c *Client) Heartbeat() {
 				c.signalDisconnect()
 				return
 			}
-
-			// 检查是否超过 90 秒没收到 PONG
 			c.pongMu.Lock()
 			since := time.Since(c.lastPong)
 			c.pongMu.Unlock()
@@ -100,14 +107,12 @@ func (c *Client) Heartbeat() {
 				c.signalDisconnect()
 				return
 			}
-
 		case <-c.disconnect:
 			return
 		}
 	}
 }
 
-// 发送断线信号
 func (c *Client) signalDisconnect() {
 	if c.connected.CompareAndSwap(true, false) {
 		select {
@@ -117,13 +122,12 @@ func (c *Client) signalDisconnect() {
 	}
 }
 
-// 接收服务器消息：解码 proto 消息 → 格式化显示
+// ReceiveMessage
 func (c *Client) ReceiveMessage() {
 	for {
 		if !c.IsConnected() {
 			return
 		}
-
 		msg, err := protocol.DecodeMessage(c.Conn)
 		if err != nil {
 			fmt.Println("\n>>>>>> 与服务器的连接已断开:", err)
@@ -131,7 +135,7 @@ func (c *Client) ReceiveMessage() {
 			return
 		}
 
-		// Phase 3: 处理 PONG 响应
+		// PONG
 		if msg.Type == protocol.MessageType_PONG {
 			c.pongMu.Lock()
 			c.lastPong = time.Now()
@@ -139,7 +143,9 @@ func (c *Client) ReceiveMessage() {
 			continue
 		}
 
-		// 根据消息类型格式化输出
+		// Phase 4: 收到私聊/房间消息 → 发送 ACK
+		c.sendAck(msg)
+
 		switch msg.Type {
 		case protocol.MessageType_SYSTEM:
 			fmt.Println(msg.Content)
@@ -150,13 +156,15 @@ func (c *Client) ReceiveMessage() {
 		case protocol.MessageType_PRIVATE:
 			fmt.Printf("%s send to you: %s\n", msg.From, msg.Content)
 
+		case protocol.MessageType_ROOM_CHAT:
+			fmt.Printf("[Room]%s: %s\n", msg.From, msg.Content)
+
 		default:
 			fmt.Println(msg.Content)
 		}
 	}
 }
 
-// 发送 proto 消息（线程安全）
 func (c *Client) sendMessage(msg *protocol.Message) {
 	if !c.IsConnected() {
 		fmt.Println(">>>>>> 未连接到服务器，无法发送消息")
@@ -168,7 +176,7 @@ func (c *Client) sendMessage(msg *protocol.Message) {
 	}
 }
 
-// Phase 3: 断线重连（指数退避）
+// Reconnect
 func (c *Client) reconnect() bool {
 	for attempt := 1; attempt <= 10; attempt++ {
 		backoff := time.Duration(math.Min(30, math.Pow(2, float64(attempt)))) * time.Second
@@ -182,19 +190,16 @@ func (c *Client) reconnect() bool {
 			continue
 		}
 
-		// 关闭旧连接（如果还有效）
 		if c.Conn != nil {
 			c.Conn.Close()
 		}
 		c.Conn = conn
 		c.connected.Store(true)
 
-		// 恢复 PONG 计时器
 		c.pongMu.Lock()
 		c.lastPong = time.Now()
 		c.pongMu.Unlock()
 
-		// 重新注册用户名
 		if c.Name != "" && c.Name != c.Conn.RemoteAddr().String() {
 			if err := protocol.EncodeMessage(c.Conn, &protocol.Message{
 				Type:    protocol.MessageType_RENAME,
@@ -209,16 +214,16 @@ func (c *Client) reconnect() bool {
 		fmt.Println(">>>>>> 重新连接成功!")
 		return true
 	}
-
 	fmt.Println(">>>>>> 重连失败，已达最大重试次数")
 	return false
 }
 
-// 显示菜单
+// Menu
 func (c *Client) Menu() bool {
-	fmt.Println("1、群聊模式")
+	fmt.Println("\n1、群聊模式")
 	fmt.Println("2、私聊模式")
 	fmt.Println("3、更新用户名")
+	fmt.Println("4、聊天室") // Phase 4
 	fmt.Println("0、退出")
 
 	input := c.readLine("")
@@ -233,6 +238,9 @@ func (c *Client) Menu() bool {
 	case "3":
 		c.flag = 3
 		return true
+	case "4":
+		c.flag = 4
+		return true
 	case "0":
 		c.flag = 0
 		return true
@@ -242,10 +250,9 @@ func (c *Client) Menu() bool {
 	}
 }
 
-// 群聊模式
+// GroupChat
 func (c *Client) GroupChat() {
 	fmt.Println(">>>>>>please input chat message (exit out)")
-
 	for {
 		chatMsg := c.readLine("")
 		if chatMsg == "exit" {
@@ -253,11 +260,10 @@ func (c *Client) GroupChat() {
 		}
 		if chatMsg == "" {
 			if !c.IsConnected() {
-				return // 断线时返回主循环处理重连
+				return
 			}
 			continue
 		}
-
 		c.sendMessage(&protocol.Message{
 			Type:    protocol.MessageType_CHAT,
 			Content: chatMsg,
@@ -265,22 +271,17 @@ func (c *Client) GroupChat() {
 	}
 }
 
-// 在线用户列表
 func (c *Client) OnlineUserList() {
-	c.sendMessage(&protocol.Message{
-		Type: protocol.MessageType_WHO,
-	})
+	c.sendMessage(&protocol.Message{Type: protocol.MessageType_WHO})
 }
 
-// 私聊模式
+// PrivateChat
 func (c *Client) PrivateChat() {
 	c.OnlineUserList()
-
 	remoteName := c.readLine(">>>>>>请输入聊天对象用户名（输入exit退出）: ")
 	if remoteName == "exit" || remoteName == "" {
 		return
 	}
-
 	for {
 		chatMsg := c.readLine(">>>>>>请输入消息内容（输入exit退出）：")
 		if chatMsg == "exit" {
@@ -288,11 +289,10 @@ func (c *Client) PrivateChat() {
 		}
 		if chatMsg == "" {
 			if !c.IsConnected() {
-				break // 断线时返回主循环处理重连
+				break
 			}
 			continue
 		}
-
 		c.sendMessage(&protocol.Message{
 			Type:    protocol.MessageType_PRIVATE,
 			To:      remoteName,
@@ -301,13 +301,12 @@ func (c *Client) PrivateChat() {
 	}
 }
 
-// 更新用户名
+// UpdateName
 func (c *Client) UpdateName() bool {
 	newName := c.readLine(">>>>>>Please input rename: ")
 	if newName == "" {
 		return false
 	}
-
 	c.Name = newName
 	c.sendMessage(&protocol.Message{
 		Type:    protocol.MessageType_RENAME,
@@ -316,23 +315,114 @@ func (c *Client) UpdateName() bool {
 	return true
 }
 
-// 主业务
-func (c *Client) Run() {
-	// 启动心跳
-	go c.Heartbeat()
+// ---------- Phase 4: 聊天室功能 ----------
 
-	// 启动消息接收
+func (c *Client) RoomMenu() {
+	fmt.Println("\n--- 聊天室菜单 ---")
+	fmt.Println("1、创建聊天室")
+	fmt.Println("2、加入聊天室")
+	fmt.Println("3、离开聊天室")
+	fmt.Println("4、查看聊天室列表")
+	fmt.Println("5、进入聊天室发消息")
+	fmt.Println("0、返回主菜单")
+
+	input := c.readLine("")
+
+	switch input {
+	case "1":
+		c.RoomCreate()
+	case "2":
+		c.RoomJoin()
+	case "3":
+		c.RoomLeave()
+	case "4":
+		c.RoomList()
+	case "5":
+		c.RoomChat()
+	case "0":
+		return
+	default:
+		fmt.Println(">>>>>>Invalid choice")
+	}
+}
+
+func (c *Client) RoomCreate() {
+	name := c.readLine(">>>>>>输入聊天室名称: ")
+	if name == "" {
+		return
+	}
+	c.sendMessage(&protocol.Message{
+		Type:    protocol.MessageType_ROOM_CREATE,
+		Content: name,
+	})
+}
+
+func (c *Client) RoomJoin() {
+	c.RoomList()
+	name := c.readLine(">>>>>>输入要加入的聊天室名称: ")
+	if name == "" {
+		return
+	}
+	c.sendMessage(&protocol.Message{
+		Type:    protocol.MessageType_ROOM_JOIN,
+		Content: name,
+	})
+}
+
+func (c *Client) RoomLeave() {
+	name := c.readLine(">>>>>>输入要离开的聊天室名称: ")
+	if name == "" {
+		return
+	}
+	c.sendMessage(&protocol.Message{
+		Type:    protocol.MessageType_ROOM_LEAVE,
+		Content: name,
+	})
+}
+
+func (c *Client) RoomList() {
+	c.sendMessage(&protocol.Message{Type: protocol.MessageType_ROOM_LIST})
+}
+
+func (c *Client) RoomChat() {
+	c.RoomList()
+	roomName := c.readLine(">>>>>>输入聊天室名称: ")
+	if roomName == "" {
+		return
+	}
+	fmt.Printf(">>>>>>进入聊天室 '%s' (输入 exit 退出)\n", roomName)
+	for {
+		chatMsg := c.readLine("")
+		if chatMsg == "exit" {
+			return
+		}
+		if chatMsg == "" {
+			if !c.IsConnected() {
+				return
+			}
+			continue
+		}
+		c.sendMessage(&protocol.Message{
+			Type:    protocol.MessageType_ROOM_CHAT,
+			To:      roomName, // To 字段存放房间名
+			Content: chatMsg,
+		})
+	}
+}
+
+// ---------- 主业务 ----------
+
+func (c *Client) Run() {
+	go c.Heartbeat()
 	go c.ReceiveMessage()
 
 	for c.flag != 0 {
-		// Phase 3: 检测断线 → 自动重连
 		if !c.IsConnected() {
 			fmt.Println("\n>>>>>> 连接已断开，开始重连...")
 			if !c.reconnect() {
 				fmt.Println(">>>>>> 重连失败，程序退出")
 				return
 			}
-			// 重连成功后重启接收和心跳协程
 			go c.ReceiveMessage()
 			go c.Heartbeat()
 			fmt.Println(">>>>>> 已恢复，继续操作...")
@@ -348,12 +438,13 @@ func (c *Client) Run() {
 			c.PrivateChat()
 		case 3:
 			c.UpdateName()
+		case 4:
+			c.RoomMenu() // Phase 4
 		case 0:
 			fmt.Println("退出")
 		}
 	}
 
-	// 关闭连接
 	if c.Conn != nil {
 		c.Conn.Close()
 	}
@@ -376,6 +467,5 @@ func main() {
 	}
 
 	fmt.Println(">>>>>>>>success connect to server......")
-
 	client.Run()
 }
